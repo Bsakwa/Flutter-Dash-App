@@ -1,8 +1,212 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import '../models/user.dart';
 
+// User Model
+class User {
+  final int userId;
+  final String username;
+  final String email;
+  final String passwordHash;
+  final String createdAt;
+  final String updatedAt;
+  final String status;
+  final String avatar;
+  final String? role;
+
+  User({
+    required this.userId,
+    required this.username,
+    required this.email,
+    required this.passwordHash,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.status,
+    required this.avatar,
+    this.role,
+  });
+
+  factory User.fromJson(Map<String, dynamic> json) {
+    return User(
+      userId: json['userId'],
+      username: json['username'],
+      email: json['email'],
+      passwordHash: json['passwordHash'],
+      createdAt: json['createdAt'],
+      updatedAt: json['updatedAt'],
+      status: json['status'],
+      avatar: json['avatar'],
+      role: json['role'],
+    );
+  }
+}
+
+// Add User Dialog
+class AddUserDialog extends StatefulWidget {
+  final Function onUserAdded;
+
+  const AddUserDialog({
+    super.key,
+    required this.onUserAdded,
+  });
+
+  @override
+  State<AddUserDialog> createState() => _AddUserDialogState();
+}
+
+class _AddUserDialogState extends State<AddUserDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _usernameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+
+  Future<void> _handleSubmit() async {
+    if (_formKey.currentState!.validate()) {
+      setState(() => _isLoading = true);
+      
+      try {
+        final response = await http.post(
+          Uri.parse('http://localhost:5172/api/Users'),
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: json.encode({
+            'username': _usernameController.text,
+            'email': _emailController.text,
+            'passwordHash': _passwordController.text,
+          }),
+        );
+
+        if (response.statusCode == 200) {
+          if (mounted) {
+            Navigator.of(context).pop();
+            widget.onUserAdded();
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Failed to create user. Please try again.'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error: $error'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Add New User',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 24),
+              TextFormField(
+                controller: _usernameController,
+                decoration: const InputDecoration(
+                  labelText: 'Username',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter a username';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _emailController,
+                decoration: const InputDecoration(
+                  labelText: 'Email',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter an email';
+                  }
+                  if (!value.contains('@')) {
+                    return 'Please enter a valid email';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _passwordController,
+                decoration: const InputDecoration(
+                  labelText: 'Password',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter a password';
+                  }
+                  if (value.length < 6) {
+                    return 'Password must be at least 6 characters';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _isLoading ? null : _handleSubmit,
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Text('Add User'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Users Screen
 class UsersScreen extends StatefulWidget {
   const UsersScreen({super.key});
 
@@ -89,6 +293,23 @@ class _UsersScreenState extends State<UsersScreen> {
     }
   }
 
+  void _showAddUserDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AddUserDialog(
+        onUserAdded: () {
+          fetchUsers(); // Refresh the users list
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('User added successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -108,9 +329,7 @@ class _UsersScreenState extends State<UsersScreen> {
                   ),
                 ),
                 ElevatedButton(
-                  onPressed: () {
-                    // Add user functionality
-                  },
+                  onPressed: _showAddUserDialog,
                   child: const Text('Add User'),
                 ),
               ],

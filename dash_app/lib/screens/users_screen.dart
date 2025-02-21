@@ -1,41 +1,103 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:graphql_flutter/graphql_flutter.dart';
 import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+final HttpLink httpLink = HttpLink(
+  'http://localhost:5172/graphql',
+  defaultHeaders: {
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  },
+);
+
+final GraphQLClient client = GraphQLClient(
+  link: httpLink,
+  cache: GraphQLCache(),
+  defaultPolicies: DefaultPolicies(
+    query: Policies(
+      fetch: FetchPolicy.networkOnly,
+    ),
+  ),
+);
+
+// GraphQL Queries and Mutations
+final String getUsersQuery = '''
+  query GetUsers {
+    users {
+      userId
+      username
+      email
+      createdAt
+      updatedAt
+      status
+    }
+  }
+''';
+
+final String createUserMutation = '''
+  mutation CreateUser(\$input: CreateUserInput!) {
+    createUser(input: \$input) {
+      userId
+      username
+      email
+      status
+    }
+  }
+''';
+
+final String updateUserMutation = '''
+  mutation UpdateUser(\$input: UpdateUserInput!) {
+    updateUser(input: \$input) {
+      userId
+      username
+      email
+      status
+
+    }
+  }
+''';
+
+final String deleteUserMutation = '''
+  mutation DeleteUser(\$id: Int!) {
+    deleteUser(id: \$id)
+  }
+''';
 
 // User Model
 class User {
   final int userId;
   final String username;
   final String email;
-  final String passwordHash;
+  final String? passwordHash;
   final String createdAt;
   final String updatedAt;
   final String status;
   final String avatar;
   final String? role;
-
+  
   User({
     required this.userId,
     required this.username,
     required this.email,
-    required this.passwordHash,
+    this.passwordHash,
     required this.createdAt,
     required this.updatedAt,
     required this.status,
     required this.avatar,
     this.role,
   });
-
+  
   factory User.fromJson(Map<String, dynamic> json) {
     return User(
       userId: json['userId'],
       username: json['username'],
       email: json['email'],
       passwordHash: json['passwordHash'],
-      createdAt: json['createdAt'],
-      updatedAt: json['updatedAt'],
+      createdAt: json['createdAt'] ?? DateTime.now().toIso8601String(),
+      updatedAt: json['updatedAt'] ?? DateTime.now().toIso8601String(),
       status: json['status'],
-      avatar: json['avatar'],
+      avatar: json['avatar'] ?? 'https://randomuser.me/api/portraits/thumb/men/1.jpg',
       role: json['role'],
     );
   }
@@ -43,13 +105,13 @@ class User {
 
 // Add User Dialog
 class AddUserDialog extends StatefulWidget {
-  final Function onUserAdded;
-
+  final Function(User) onUserAdded;
+  
   const AddUserDialog({
     super.key,
     required this.onUserAdded,
   });
-
+  
   @override
   State<AddUserDialog> createState() => _AddUserDialogState();
 }
@@ -60,38 +122,33 @@ class _AddUserDialogState extends State<AddUserDialog> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
-
+  
   Future<void> _handleSubmit() async {
     if (_formKey.currentState!.validate()) {
       setState(() => _isLoading = true);
-      
       try {
-        final response = await http.post(
-          Uri.parse('http://localhost:5172/api/Users'),
-          headers: {
-            'Content-Type': 'application/json',
+        final MutationOptions options = MutationOptions(
+          document: gql(createUserMutation),
+          variables: {
+            'input': {
+              'username': _usernameController.text,
+              'email': _emailController.text,
+              'passwordHash': _passwordController.text,
+            },
           },
-          body: json.encode({
-            'username': _usernameController.text,
-            'email': _emailController.text,
-            'passwordHash': _passwordController.text,
-          }),
         );
-
-        if (response.statusCode == 200) {
-          if (mounted) {
-            Navigator.of(context).pop();
-            widget.onUserAdded();
-          }
-        } else {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Failed to create user. Please try again.'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
+        
+        final QueryResult result = await client.mutate(options);
+        
+        if (result.hasException) {
+          throw Exception(result.exception.toString());
+        }
+        
+        final user = User.fromJson(result.data?['createUser']);
+        
+        if (mounted) {
+          Navigator.of(context).pop();
+          widget.onUserAdded(user);
         }
       } catch (error) {
         if (mounted) {
@@ -109,7 +166,7 @@ class _AddUserDialogState extends State<AddUserDialog> {
       }
     }
   }
-
+  
   @override
   Widget build(BuildContext context) {
     return Dialog(
@@ -206,10 +263,224 @@ class _AddUserDialogState extends State<AddUserDialog> {
   }
 }
 
+// Edit User Dialog
+class EditUserDialog extends StatefulWidget {
+  final User user;
+  final Function(User) onUserUpdated;
+  
+  const EditUserDialog({
+    super.key,
+    required this.user,
+    required this.onUserUpdated,
+  });
+  
+  @override
+  State<EditUserDialog> createState() => _EditUserDialogState();
+}
+
+class _EditUserDialogState extends State<EditUserDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late TextEditingController _usernameController;
+  late TextEditingController _emailController;
+  late TextEditingController _passwordController;
+  late String _selectedStatus;
+  bool _isLoading = false;
+  
+  @override
+  void initState() {
+    super.initState();
+    _usernameController = TextEditingController(text: widget.user.username);
+    _emailController = TextEditingController(text: widget.user.email);
+    _passwordController = TextEditingController();
+    _selectedStatus = widget.user.status;
+  }
+  
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleSubmit() async {
+    if (_formKey.currentState!.validate()) {
+      setState(() => _isLoading = true);
+      try {
+        // Create the input object
+        final Map<String, dynamic> input = {
+          'userId': widget.user.userId,
+          'username': _usernameController.text,
+          'email': _emailController.text,
+          'status': _selectedStatus,
+          'passwordHash': widget.user.passwordHash, 
+        };
+
+        // Only add the password if it's not empty
+        if (_passwordController.text.isNotEmpty) {
+          input['passwordHash'] = _passwordController.text;
+        }
+        
+        
+        final MutationOptions options = MutationOptions(
+          document: gql(updateUserMutation),
+          variables: {
+            'input': input,
+          },
+        );
+        
+        final QueryResult result = await client.mutate(options);
+        
+        if (result.hasException) {
+          throw Exception(result.exception.toString());
+        }
+        
+        final updatedUser = User.fromJson(result.data?['updateUser']);
+        
+        if (mounted) {
+          Navigator.of(context).pop();
+          widget.onUserUpdated(updatedUser);
+        }
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error: $error'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } finally {
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
+      }
+    }
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        constraints: const BoxConstraints(maxWidth: 400),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Edit User: ${widget.user.username}',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 24),
+              TextFormField(
+                controller: _usernameController,
+                decoration: const InputDecoration(
+                  labelText: 'Username',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter a username';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _emailController,
+                decoration: const InputDecoration(
+                  labelText: 'Email',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter an email';
+                  }
+                  if (!value.contains('@')) {
+                    return 'Please enter a valid email';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _passwordController,
+                decoration: const InputDecoration(
+                  labelText: 'New Password (leave blank to keep current)',
+                  border: OutlineInputBorder(),
+                  helperText: 'Only enter if you want to change the password',
+                ),
+                obscureText: true,
+                validator: (value) {
+                  if (value != null && value.isNotEmpty && value.length < 6) {
+                    return 'Password must be at least 6 characters';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                decoration: const InputDecoration(
+                  labelText: 'Status',
+                  border: OutlineInputBorder(),
+                ),
+                value: _selectedStatus,
+                items: const [
+                  DropdownMenuItem(
+                    value: 'active',
+                    child: Text('Active'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'blocked',
+                    child: Text('Blocked'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      _selectedStatus = value;
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: _isLoading ? null : _handleSubmit,
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Text('Save Changes'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // Users Screen
 class UsersScreen extends StatefulWidget {
   const UsersScreen({super.key});
-
+  
   @override
   State<UsersScreen> createState() => _UsersScreenState();
 }
@@ -217,88 +488,49 @@ class UsersScreen extends StatefulWidget {
 class _UsersScreenState extends State<UsersScreen> {
   List<User> users = [];
   bool isLoading = true;
-
+  
   @override
   void initState() {
     super.initState();
     fetchUsers();
   }
-
+  
   Future<void> fetchUsers() async {
+    setState(() => isLoading = true);
     try {
-      final response = await http.get(Uri.parse('http://localhost:5172/api/Users'));
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        
-        // Fetch random avatars
-        final avatarResponse = await http.get(
-          Uri.parse('https://randomuser.me/api/?results=${data.length}')
-        );
-        final avatarData = json.decode(avatarResponse.body);
-        
-        final List<User> formattedUsers = [];
-        for (var i = 0; i < data.length; i++) {
-          final user = data[i];
-          user['avatar'] = avatarData['results'][i]['picture']['thumbnail'];
-          user['role'] = 'User';
-          formattedUsers.add(User.fromJson(user));
-        }
-        
-        setState(() {
-          users = formattedUsers;
-          isLoading = false;
-        });
+      final QueryOptions options = QueryOptions(
+        document: gql(getUsersQuery),
+        fetchPolicy: FetchPolicy.networkOnly,
+        errorPolicy: ErrorPolicy.all,
+      );
+      
+      final QueryResult result = await client.query(options).timeout(const Duration(seconds: 10));
+      
+      if (result.hasException) {
+        throw Exception(result.exception.toString());
       }
+      
+      final List<dynamic> userList = result.data?['users'] ?? [];
+      final List<User> formattedUsers = userList.map((user) => User.fromJson(user)).toList();
+      
+      setState(() {
+        users = formattedUsers;
+        isLoading = false;
+      });
     } catch (error) {
       debugPrint('Error fetching users: $error');
       setState(() => isLoading = false);
     }
   }
-
-  Future<void> handleStatusChange(int userId, String newStatus) async {
-    final endpoint = newStatus == 'Active'
-        ? 'http://localhost:5172/api/Users/bulk-activate'
-        : 'http://localhost:5172/api/Users/bulk-block';
-    try {
-      final response = await http.put(
-        Uri.parse(endpoint),
-        headers: {
-          'accept': '*/*',
-          'Content-Type': 'application/json',
-        },
-        body: json.encode([userId]),
-      );
-      if (response.statusCode == 200) {
-        setState(() {
-          users = users.map((user) {
-            if (user.userId == userId) {
-              return User(
-                userId: user.userId,
-                username: user.username,
-                email: user.email,
-                passwordHash: user.passwordHash,
-                createdAt: user.createdAt,
-                updatedAt: user.updatedAt,
-                status: newStatus,
-                avatar: user.avatar,
-                role: user.role,
-              );
-            }
-            return user;
-          }).toList();
-        });
-      }
-    } catch (error) {
-      debugPrint('Error updating user status: $error');
-    }
-  }
-
+  
   void _showAddUserDialog() {
     showDialog(
       context: context,
       builder: (context) => AddUserDialog(
-        onUserAdded: () {
-          fetchUsers(); // Refresh the users list
+        onUserAdded: (user) {
+          setState(() {
+            users.add(user);
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('User added successfully'),
@@ -309,7 +541,29 @@ class _UsersScreenState extends State<UsersScreen> {
       ),
     );
   }
-
+  
+  void _showEditUserDialog(User user) {
+  showDialog(
+    context: context,
+    builder: (context) => EditUserDialog(
+      user: user,
+      onUserUpdated: (updatedUser) async {  // Make this async
+        // First fetch fresh data from server
+        await fetchUsers();  // Refetch all users to get latest data
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('User updated successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      },
+    ),
+  );
+ }
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -423,14 +677,13 @@ class _UsersScreenState extends State<UsersScreen> {
                                     ),
                                   ),
                                   DataCell(
-                                    TextButton(
-                                      onPressed: () => handleStatusChange(
-                                        user.userId,
-                                        user.status == 'Active' ? 'Blocked' : 'Active',
-                                      ),
-                                      child: Text(
-                                        user.status == 'Active' ? 'Block' : 'Activate',
-                                      ),
+                                    Row(
+                                      children: [
+                                        TextButton(
+                                          onPressed: () => _showEditUserDialog(user),
+                                          child: const Text('Edit'),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -447,3 +700,5 @@ class _UsersScreenState extends State<UsersScreen> {
     );
   }
 }
+
+
